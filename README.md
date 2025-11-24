@@ -1,5 +1,5 @@
----
-## 🧠 Automatic-Knowledge-Acquisition (aka ToSecondBrain)
+
+# Automatic-Knowledge-Acquisition (aka ToSecondBrain)
 
 > **"내 손안의 정보를 가장 간편하게 제2의 뇌(Second Brain)로 연결하는 파이프라인"**
 
@@ -18,7 +18,7 @@
 * **💎 Obsidian 완벽 연동:** 분석 결과가 태그가 포함된 Markdown 파일로 내 Obsidian Inbox 폴더에 자동 저장됩니다.
 * **🧹 유지비용 제로(Zero Maintenance):** 처리가 완료되면 클라우드(Firebase)의 원본 데이터는 자동으로 삭제되어 비용이 발생하지 않습니다.
 * **🪟 윈도우 자동 실행:** PC 부팅 시 백그라운드에서 Python 엔진이 자동으로 시작됩니다.
----
+
 ### 🛠️ 시스템 아키텍처 (How it Works)
 
 이 시스템은  **안드로이드 앱(Client)** ,  **Firebase(Middleware)** , **Python 스크립트(Server/Engine)**의 3박자로 작동합니다.
