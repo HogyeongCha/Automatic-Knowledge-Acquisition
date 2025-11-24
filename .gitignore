@@ -1,0 +1,25 @@
+# =========================
+# 🔒 보안 필수 (Secret Keys)
+# =========================
+serviceAccountKey.json
+google-services.json
+.env
+
+# =========================
+# 🐍 Python 관련
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+
+# =========================
+# 📱 Android 관련
+# =========================
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
