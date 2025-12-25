@@ -1,15 +1,22 @@
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging
 from firebase_admin import storage as admin_storage
-import google.generativeai as genai
+
+# [NEW] 새로운 Gemini SDK Import
+from google import genai
+from google.genai.types import Tool, GenerateContentConfig, Part
+
 import os
 import time
 import requests
 from datetime import datetime
 import sys
 
+# ==========================================
+# ⚙️ 설정 및 초기화
+# ==========================================
+
 # 1. 내 Obsidian 저장소의 'Inbox' 폴더 경로
-# 예: "C:/Users/User1/Documents/Obsidian Vault/Inbox"
 OBSIDIAN_PATH = "C:/Users/ChaHogyeong/Second_brain"
 
 # 2. Gemini API Key
@@ -19,117 +26,145 @@ if not GEMINI_API_KEY:
 
 # 3. Firebase 서비스 계정 키 파일 이름
 FIREBASE_KEY_FILE = "serviceAccountKey.json"
+FIREBASE_CONFIG = {
+    'storageBucket': 'autoknowledgeacquisition.firebasestorage.app' 
+}
 
-# ==========================================
+# [NEW] Gemini Client 초기화 (v2 방식)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 1. Gemini 초기화
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-pro')
+# Firebase 초기화
+if not firebase_admin._apps:
+    cred = credentials.Certificate(FIREBASE_KEY_FILE)
+    firebase_admin.initialize_app(cred, FIREBASE_CONFIG)
 
-# 2. Firebase 초기화
-cred = credentials.Certificate(FIREBASE_KEY_FILE)
-firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-print("🧠 Brain is Active! Waiting for signals from Firebase...")
+print("🧠 Brain is Active (v2.0 with URL Context)! Waiting for signals...")
 print(f"📂 Saving notes to: {OBSIDIAN_PATH}")
+
+# ==========================================
+# 🛠️ 핵심 기능 함수
+# ==========================================
 
 def generate_markdown(content_type, content_data, image_path=None, mode="study"):
     
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # 🌟 프롬프트
+    # 🌟 프롬프트 정의
     prompts = {
-        # 1. 📝 학습/요약 모드
         "study": """
             Role: Meticulous graduate student teaching assistant.
             Task: Organize the input into study materials.
             Focus: Core concept definitions, logical structure, summaries, key points to memorize.
             Output: Clean Markdown lecture note format.
         """,
-        
-        # 2. 💻 기술 뉴스/동향 모드
         "tech": """
-            Role: IT Technology Trends Specialist Journalist (Tech Journalist).
+            Role: IT Technology Trends Specialist Journalist.
             Task: Analyze development news, release notes, and technical articles.
-            Focus:
-            - Core features and emergence context of new technologies.
-            - Advantages and disadvantages compared to existing technologies (Trade-offs).
-            - Impact on the industry and key points developers should note.
+            Focus: Core features, context, trade-offs, and industry impact.
             Output: Technical blog post format (Insight-focused).
         """,
-        
-        # 3. 🎨 영감/아이디어 모드
         "idea": """
-            Role: Creative Planner (Product Manager).
+            Role: Creative Planner (PM).
             Task: Derive business/creative ideas from this content.
             Focus: Application methods, related service ideas, brainstorming.
             Output: Idea note format.
         """,
-        
-        # 4. 📈 경제/투자 공부 모드
         "economy": """
-            Role: Friendly Economic/Investment Mentor (Economic Educator).
-            Task: Provide commentary on charts or news to enable learning through 'investment knowledge'.
-            Focus:
-            - Analyze 'market principles' and 'causal relationships' rather than simple buy/sell signals.
-            - Explain economic terms that appear and compare them to historical analogies.
-            - The impact of this phenomenon on the macroeconomy.
-            - Derive the mindset or insights an investor should possess.
+            Role: Friendly Economic/Investment Mentor.
+            Task: Provide commentary on charts or news for 'investment knowledge'.
+            Focus: Market principles, causal relationships, macroeconomy impact.
             Output: Economic learning notes format.
-*** Translated with www.DeepL.com/Translator (free version) ***
-
-
         """,
-
-        # 5. 📂 일반/보편적 모드
         "general": """
             Role: Competent knowledge archiving specialist.
-            Task: Identify the subject and context of input information, then organize it for easy future retrieval.
-            Focus: Topic identification, 3-line summarization, structuring, tag suggestions.
+            Task: Identify subject and context, organize for retrieval.
+            Focus: Topic identification, 3-line summarization, structuring, tags.
             Output: Easy-to-read Markdown format.
         """
     }
     
-    # 선택된 모드의 프롬프트 가져오기 (없으면 study가 기본)
-    selected_prompt = prompts.get(mode, prompts["study"])
+    base_prompt = prompts.get(mode, prompts["study"])
     
+    # [NEW] 도구(Tool) 설정
+    tools = []
+    final_input_content = ""
+
+    # 1. URL 타입일 경우: URL Context 도구 활성화
+    if content_type == "url":
+        tools = [{"url_context": {}}]
+        # 프롬프트에 URL을 명시적으로 포함
+        final_input_content = f"Please analyze the content of this URL: {content_data}"
+    else:
+        # 텍스트/이미지일 경우
+        final_input_content = content_data
+
     full_prompt = f"""
-    {selected_prompt}
+    {base_prompt}
     
-    Language: (English).
+    Language: Korean (Translate insights into Korean).
     Input Type: {content_type}
-    Input Context: {content_data}
+    Input Context: {final_input_content}
     Capture Time: {current_time}
     
     Output Requirements:
     - Use Obsidian Markdown format.
-    - Add tags: #{mode} #Inbox
+    - Start with a clear # Title at the very first line.
+    - Add tags: #{mode} #Inbox #{content_type}
     """
     
     try:
+        # [NEW] 설정 객체 생성
+        config = GenerateContentConfig(
+            tools=tools,
+            response_mime_type="text/plain" 
+        )
+        
+        # 모델 선택 (Flash 모델이 도구 사용 속도가 빠름)
+        model_id = "gemini-2.5-pro"
+
+        response = None
+
+        # A. 이미지 처리
         if content_type == "image" and image_path:
             with open(image_path, "rb") as f:
-                image_data = f.read()
-            response = model.generate_content([full_prompt, {"mime_type": "image/jpeg", "data": image_data}])
+                image_bytes = f.read()
+            
+            # 이미지 바이트와 텍스트 프롬프트를 함께 전송
+            response = client.models.generate_content(
+                model=model_id,
+                contents=[full_prompt, Part.from_bytes(data=image_bytes, mime_type="image/jpeg")],
+                config=config
+            )
+            
+        # B. 텍스트 또는 URL 처리
         else:
-            response = model.generate_content(full_prompt)
+            response = client.models.generate_content(
+                model=model_id,
+                contents=full_prompt,
+                config=config
+            )
         
-        # 응답이 제대로 왔는지 확인
         if not response.text:
             raise Exception("Gemini로부터 빈 응답을 받았습니다.")
             
+        # [디버깅] URL 메타데이터 확인 (URL이 제대로 읽혔는지 콘솔 출력)
+        if content_type == "url" and response.candidates[0].url_context_metadata:
+             print(f"🔗 URL Metadata: {response.candidates[0].url_context_metadata}")
+
         return response.text
 
     except Exception as e:
-        # 예외를 상위(on_snapshot)로 던져버림
         print(f"🔥 Gemini Generation Error: {e}")
-        raise e  # 에러를 호출한 쪽으로 그대로 전달
+        raise e
 
 def save_to_obsidian(title, content):
-    # Obsidian 폴더에 .md 파일로 저장
-    # 파일명에 사용할 수 없는 특수문자 제거
     safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    # 파일명이 너무 길어지는 것 방지
+    if len(safe_title) > 50: 
+        safe_title = safe_title[:50]
+        
     filename = f"{safe_title}_{int(time.time())}.md"
     full_path = os.path.join(OBSIDIAN_PATH, filename)
     
@@ -139,9 +174,7 @@ def save_to_obsidian(title, content):
     print(f"✨ Saved to Obsidian: {filename}")
 
 def send_push_notification(title, body):
-    # 안드로이드 폰으로 푸시 알림
     try:
-        # 'updates'라는 주제를 구독한 기기들에게 메시지 전송
         message = messaging.Message(
             notification=messaging.Notification(
                 title=title,
@@ -154,30 +187,32 @@ def send_push_notification(title, body):
     except Exception as e:
         print(f"❌ Push failed: {e}")
 
+# ==========================================
+# 📡 Firebase 리스너
+# ==========================================
+
 def on_snapshot(col_snapshot, changes, read_time):
-    """Firebase 변경사항을 실시간으로 감지하는 리스너"""
     for change in changes:
         if change.type.name == 'ADDED':
             doc = change.document
             data = doc.to_dict()
-            doc_id = doc.id # 문서 ID 저장
+            doc_id = doc.id
             
-            # 상태가 'waiting'인 것만 처리
             if data.get('status') == 'waiting':
                 print(f"\n⚡ Signal Detected! Type: {data.get('type')}")
                 
-                # 처리 상태를 'processing'으로 변경
+                # 중복 처리 방지를 위해 즉시 상태 변경
                 doc.reference.update({'status': 'processing'})
                 
                 temp_image_path = None
                 try:
                     content = ""
+                    input_type = data.get('type')
                     
-                    # 1. 이미지 처리
-                    if data.get('type') == 'image':
+                    # 1. 이미지 다운로드 처리
+                    if input_type == 'image':
                         image_url = data.get('url')
                         print("Downloading image...")
-                        # 이미지 임시 다운로드
                         img_data = requests.get(image_url).content
                         temp_image_path = "temp_image.jpg"
                         with open(temp_image_path, 'wb') as handler:
@@ -185,35 +220,41 @@ def on_snapshot(col_snapshot, changes, read_time):
                         content = "User uploaded an image."
                     
                     # 2. 텍스트 처리
-                    elif data.get('type') == 'text':
+                    elif input_type == 'text':
                         content = data.get('content')
+                        
+                    # 3. [NEW] URL 처리
+                    elif input_type == 'url':
+                        content = data.get('url') # 앱에서 'url' 필드에 링크를 담아 보내야 함
+                        print(f"🔗 Processing Link: {content}")
                     
-                    # 3. Gemini 분석 요청
+                    # Gemini 호출
                     mode = data.get('mode', 'study')
-                    md_result = generate_markdown(data.get('type'), content, temp_image_path, mode)
+                    md_result = generate_markdown(input_type, content, temp_image_path, mode)
                     
-                    # 4. Obsidian 저장 (제목 추출)
-                    # 첫 줄(# Title)에서 제목만 따오기
+                    # 제목 추출
                     title_line = md_result.split('\n')[0].replace('#', '').strip()
                     if not title_line: title_line = "Untitled Note"
                     
+                    # 저장
                     save_to_obsidian(title_line, md_result)
-
-                    # 5. 푸시 알림 전송
+                    
+                    # 푸시 알림
                     send_push_notification(
                         title="✅ Obsidian 저장 완료",
-                        body=f"{title_line}\n(내용이 안전하게 보관되었습니다.)" # 미리보기 내용
+                        body=f"{title_line}"
                     )
                     
-                    # 6. 임시 파일 삭제
+                    # 정리 (이미지)
                     if temp_image_path and os.path.exists(temp_image_path):
                         os.remove(temp_image_path)
 
-                    # 데이터 청소
+                    # 정리 (Firebase 데이터 삭제)
                     print("🧹 Cleaning up Firebase data...")
-                    # (1) Storage 이미지 삭제 (이미지 타입인 경우만)
-                    if data.get('type') == 'image':
-                        storage_path = data.get('storagePath') # 안드로이드에서 저장한 경로
+                    
+                    # Storage 이미지 삭제
+                    if input_type == 'image':
+                        storage_path = data.get('storagePath')
                         if storage_path:
                             try:
                                 bucket = admin_storage.bucket()
@@ -221,46 +262,38 @@ def on_snapshot(col_snapshot, changes, read_time):
                                 blob.delete()
                                 print(f"🗑️ Storage image deleted: {storage_path}")
                             except Exception as e:
-                                print(f"⚠️ Storage delete failed (might already be gone): {e}")
+                                print(f"⚠️ Storage delete failed: {e}")
 
-                    # (2) Firestore 문서 삭제
+                    # Firestore 문서 삭제
                     db.collection('queue').document(doc_id).delete()
-                    print(f"🗑️ Firestore document deleted: {doc_id}")
-                    
-                    print("✅ Workflow & Cleanup Completed!")
+                    print("✅ Workflow Completed!")
                     
                 except Exception as e:
                     error_message = str(e)
                     print(f"❌ Critical Error: {error_message}")
                     
-                    # 1. Firebase에 에러 상태 기록
                     doc.reference.update({
                         'status': 'error',
                         'error_msg': error_message,
                         'processedAt': firestore.SERVER_TIMESTAMP
                     })
 
-                    # 2. 폰으로 긴급 알림 전송
                     send_push_notification(
-                        title="🚨 시스템 긴급 정지!",
-                        body=f"오류 발생: {error_message[:100]}...\n(관리자 확인이 필요합니다.)"
+                        title="🚨 시스템 에러",
+                        body=f"오류 발생: {error_message[:50]}..."
                     )
                     
-                    # 3. 임시 파일 정리
                     if temp_image_path and os.path.exists(temp_image_path):
                         os.remove(temp_image_path)
-                        
-                    # 치명적인 에러면 프로그램 종료
-                    # "400" (잘못된 요청)이나 "API key" 관련 에러 메시지가 포함되어 있는지 확인
-                    if "400" in error_message or "API key" in error_message or "PermissionDenied" in error_message:
-                        print("🛑 Fatal error detected. Shutting down system for maintenance.")
-                        sys.exit(1) # 프로그램 강제 종료
+                    
+                    if "400" in error_message or "API key" in error_message:
+                        print("🛑 Fatal error. Shutting down.")
+                        sys.exit(1)
 
-# queue 컬렉션 감시 시작
+# 리스너 시작
 queue_ref = db.collection('queue')
 query_watch = queue_ref.where(filter=firestore.FieldFilter('status', '==', 'waiting'))
 query_watch.on_snapshot(on_snapshot)
 
-# 스크립트가 꺼지지 않게 유지
 while True:
     time.sleep(1)
