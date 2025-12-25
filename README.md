@@ -87,7 +87,7 @@ sequenceDiagram
 | **Backend / Engine** | **Python 3.x** | Core Logic Script                                       |
 |                            | Libraries            | `firebase-admin`,`google-generativeai`,`requests` |
 | **Infrastructure**   | **Firebase**   | Firestore (DB), Storage (File), FCM (Push)              |
-| **AI Model**         | **Gemini**     | Gemini-1.5-Pro (Multimodal)                             |
+| **AI Model**         | **Gemini**     | Gemini-2.5-Pro (Multimodal)                             |
 
 ---
 
